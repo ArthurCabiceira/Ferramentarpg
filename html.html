@@ -30,6 +30,7 @@
         <button class="nav-link" data-view="characters"><span class="nav-icon">♟</span> Personagens <span class="nav-count" id="nav-character-count">0</span></button>
         <button class="nav-link" data-view="items"><span class="nav-icon">◇</span> Itens <span class="nav-count" id="nav-item-count">0</span></button>
         <button class="nav-link" data-view="timers"><span class="nav-icon">◷</span> Cronômetros</button>
+        <button class="nav-link" data-view="library" aria-controls="pdf-reader" aria-expanded="false"><span class="nav-icon">▤</span> Livro PDF</button>
       </nav>
 
       <div class="sidebar-bottom">
@@ -101,6 +102,51 @@
         <div class="empty-state page-empty" id="timers-empty"><span class="empty-symbol">◷</span><strong>Sem cronômetros ativos</strong><p>Prepare um limite de tempo para qualquer momento da sessão.</p><button class="button button-primary" data-action="new-timer">＋ Criar cronômetro</button></div>
       </section>
     </main>
+
+    <aside class="pdf-reader" id="pdf-reader" aria-label="Leitor de livro em PDF" hidden>
+      <header class="pdf-reader-header">
+        <div class="pdf-reader-heading"><p class="eyebrow">BIBLIOTECA DA MESA</p><h2 id="pdf-book-name">Livro de RPG</h2></div>
+        <div class="pdf-reader-actions">
+          <button class="button button-secondary" id="pdf-choose-button">＋ Escolher PDF</button>
+          <input id="pdf-file-input" type="file" accept=".pdf,application/pdf" hidden>
+          <button class="icon-button" id="pdf-remove-button" aria-label="Remover livro PDF" title="Remover livro" hidden>×</button>
+          <button class="icon-button" id="pdf-reader-close" aria-label="Fechar leitor" title="Fechar leitor">×</button>
+        </div>
+      </header>
+      <div class="pdf-reader-content" id="pdf-reader-content">
+        <div class="pdf-reader-empty" id="pdf-reader-empty">
+          <span class="empty-symbol">▤</span>
+          <strong>Traga seu livro para a mesa</strong>
+          <p>Adicione um PDF para consultar regras e inspirações sem sair das fichas ou dos cronômetros.</p>
+          <button class="button button-primary" id="pdf-empty-choose">＋ Adicionar livro PDF</button>
+          <small>O arquivo fica salvo somente neste dispositivo.</small>
+        </div>
+        <div class="pdf-document" id="pdf-document" hidden>
+          <section class="pdf-timer-monitor" id="pdf-timer-monitor" aria-label="Cronômetros da mesa" hidden>
+            <p class="eyebrow">CRONÔMETROS DA MESA</p>
+            <div class="pdf-live-timers" id="pdf-live-timers" aria-live="off"></div>
+          </section>
+          <div class="pdf-toolbar" id="pdf-toolbar" aria-label="Controles do leitor PDF" hidden>
+            <div class="pdf-page-controls">
+              <button class="timer-control subtle" id="pdf-previous-page" aria-label="Página anterior" title="Página anterior">‹</button>
+              <label class="pdf-page-indicator"><input class="pdf-page-input" id="pdf-page-input" type="number" min="1" max="1" step="1" value="1" aria-label="Ir para a página" title="Número da página"> <span aria-hidden="true">/</span> <span id="pdf-page-count">1</span></label>
+              <button class="timer-control subtle" id="pdf-next-page" aria-label="Próxima página" title="Próxima página">›</button>
+            </div>
+            <div class="pdf-zoom-controls">
+              <button class="timer-control subtle" id="pdf-zoom-out" aria-label="Diminuir zoom" title="Diminuir zoom">−</button>
+              <span id="pdf-zoom-level">100%</span>
+              <button class="timer-control subtle" id="pdf-zoom-in" aria-label="Aumentar zoom" title="Aumentar zoom">＋</button>
+            </div>
+          </div>
+          <div class="pdf-page-container" id="pdf-page-container"><p class="pdf-loading" id="pdf-loading" hidden></p><canvas id="pdf-canvas" role="img" aria-label="Página do livro em PDF"></canvas></div>
+        </div>
+        <div class="pdf-reader-error" id="pdf-reader-error" role="alert" hidden>
+          <strong>Não foi possível abrir este PDF.</strong>
+          <p id="pdf-reader-error-message"></p>
+          <button class="button button-secondary" id="pdf-retry-button">Tentar novamente</button>
+        </div>
+      </div>
+    </aside>
   </div>
 
   <div class="modal-backdrop" id="modal-backdrop" hidden>
@@ -114,6 +160,7 @@
   </div>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" integrity="sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e" crossorigin="anonymous"></script>
   <script src="java.js"></script>
 </body>
 </html>

@@ -2,11 +2,21 @@
   "use strict";
 
   const STORAGE_KEY = "cronicas-mestre-v1";
+  const BOOK_DATABASE = "cronicas-biblioteca-v1";
+  const BOOK_ID = "active-book";
   const state = loadState();
   const timers = new Map();
   let modalKind = null;
   let editingId = null;
   let toastTimeout = null;
+  let bookDatabase = null;
+  let activeBook = null;
+  let pdfDocument = null;
+  let pdfRenderTask = null;
+  let pdfLoadToken = 0;
+  let pdfRenderToken = 0;
+  let pdfPageNumber = 1;
+  let pdfZoom = 1;
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -50,11 +60,213 @@
 
   function navigate(viewName) {
     $$(".view").forEach(view => view.classList.toggle("active-view", view.id === `view-${viewName}`));
-    $$(".nav-link[data-view]").forEach(link => link.classList.toggle("active", link.dataset.view === viewName));
+    $$(".nav-link[data-view]").forEach(link => link.classList.toggle("active",
+      link.dataset.view === viewName || (link.dataset.view === "library" && !$("#pdf-reader").hidden)));
     const labels = { overview: "Visão geral", characters: "Personagens", items: "Itens", timers: "Cronômetros" };
     $("#breadcrumb-current").textContent = labels[viewName] || labels.overview;
     window.scrollTo({ top: 0, behavior: "smooth" });
     render();
+  }
+
+  function openBookDatabase() {
+    if (bookDatabase) return Promise.resolve(bookDatabase);
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(BOOK_DATABASE, 1);
+      request.onupgradeneeded = () => request.result.createObjectStore("books", { keyPath: "id" });
+      request.onsuccess = () => {
+        bookDatabase = request.result;
+        resolve(bookDatabase);
+      };
+      request.onerror = () => reject(request.error || new Error("Não foi possível abrir a biblioteca."));
+    });
+  }
+
+  function bookTransaction(mode, operation) {
+    return openBookDatabase().then(database => new Promise((resolve, reject) => {
+      const transaction = database.transaction("books", mode);
+      let result;
+      const request = operation(transaction.objectStore("books"));
+      if (request) {
+        request.onsuccess = () => { result = request.result; };
+        request.onerror = () => reject(request.error || new Error("Não foi possível acessar o livro."));
+      }
+      transaction.oncomplete = () => resolve(result);
+      transaction.onerror = () => reject(transaction.error || new Error("Não foi possível salvar a biblioteca."));
+      transaction.onabort = () => reject(transaction.error || new Error("A operação na biblioteca foi cancelada."));
+    }));
+  }
+
+  function displayBook(book) {
+    releaseBookViewer();
+    activeBook = book || null;
+    $("#pdf-reader-empty").hidden = Boolean(book);
+    $("#pdf-document").hidden = !book;
+    $("#pdf-reader-error").hidden = true;
+    $("#pdf-toolbar").hidden = true;
+    $("#pdf-remove-button").hidden = !book;
+    $("#pdf-book-name").textContent = book ? book.name : "Livro de RPG";
+    pdfPageNumber = 1;
+    pdfZoom = 1;
+    $("#pdf-canvas").width = 0;
+    $("#pdf-canvas").height = 0;
+    if (book && !$("#pdf-reader").hidden) showBookViewer();
+  }
+
+  function showPdfError(message) {
+    $("#pdf-document").hidden = true;
+    $("#pdf-reader-error-message").textContent = message;
+    $("#pdf-reader-error").hidden = false;
+  }
+
+  async function showBookViewer() {
+    if (!activeBook || pdfDocument) return;
+    if (!window.pdfjsLib) {
+      showPdfError("O leitor de PDF não carregou. Verifique sua conexão com a internet e tente novamente.");
+      return;
+    }
+
+    const token = ++pdfLoadToken;
+    $("#pdf-reader-error").hidden = true;
+    $("#pdf-document").hidden = false;
+    $("#pdf-loading").textContent = "Carregando PDF...";
+    $("#pdf-loading").hidden = false;
+    try {
+      const data = new Uint8Array(await activeBook.file.arrayBuffer());
+      const loadingTask = window.pdfjsLib.getDocument({ data, disableWorker: true });
+      const document = await loadingTask.promise;
+      if (token !== pdfLoadToken || !activeBook) {
+        await document.destroy();
+        return;
+      }
+      pdfDocument = document;
+      $("#pdf-loading").hidden = true;
+      $("#pdf-toolbar").hidden = false;
+      $("#pdf-page-count").textContent = pdfDocument.numPages;
+      $("#pdf-page-input").max = pdfDocument.numPages;
+      await renderPdfPage();
+    } catch (error) {
+      if (token !== pdfLoadToken) return;
+      console.error("Não foi possível renderizar o livro PDF:", error);
+      showPdfError("O arquivo não pôde ser lido. Confira se ele é um PDF válido e tente selecioná-lo novamente.");
+    }
+  }
+
+  async function renderPdfPage() {
+    if (!pdfDocument) return;
+    const renderToken = ++pdfRenderToken;
+    const document = pdfDocument;
+    const pageNumber = pdfPageNumber;
+    if (pdfRenderTask) pdfRenderTask.cancel();
+    pdfRenderTask = null;
+    try {
+      const page = await document.getPage(pageNumber);
+      if (renderToken !== pdfRenderToken || document !== pdfDocument) return;
+      const baseViewport = page.getViewport({ scale: 1 });
+      const fitScale = Math.min(1, Math.max(1, $("#pdf-page-container").clientWidth - 28) / baseViewport.width);
+      const viewport = page.getViewport({ scale: fitScale * pdfZoom });
+      const canvas = $("#pdf-canvas");
+      const outputScale = window.devicePixelRatio || 1;
+      const context = canvas.getContext("2d");
+      canvas.width = Math.floor(viewport.width * outputScale);
+      canvas.height = Math.floor(viewport.height * outputScale);
+      canvas.style.width = `${Math.floor(viewport.width)}px`;
+      canvas.style.height = `${Math.floor(viewport.height)}px`;
+      canvas.setAttribute("aria-label", `Página ${pageNumber} do livro ${activeBook.name}`);
+      $("#pdf-page-input").value = pageNumber;
+      $("#pdf-zoom-level").textContent = `${Math.round(pdfZoom * 100)}%`;
+      $("#pdf-previous-page").disabled = pageNumber <= 1;
+      $("#pdf-next-page").disabled = pageNumber >= document.numPages;
+      $("#pdf-page-container").scrollTop = 0;
+      const renderTask = page.render({
+        canvasContext: context,
+        viewport,
+        transform: outputScale === 1 ? null : [outputScale, 0, 0, outputScale, 0, 0]
+      });
+      pdfRenderTask = renderTask;
+      await renderTask.promise;
+    } catch (error) {
+      if (error.name !== "RenderingCancelledException" && renderToken === pdfRenderToken) {
+        console.error("Não foi possível renderizar a página do PDF:", error);
+        showPdfError("Ocorreu um erro ao desenhar esta página do PDF.");
+      }
+    } finally {
+      if (renderToken === pdfRenderToken) pdfRenderTask = null;
+    }
+  }
+
+  function releaseBookViewer() {
+    pdfLoadToken += 1;
+    pdfRenderToken += 1;
+    if (pdfRenderTask) pdfRenderTask.cancel();
+    pdfRenderTask = null;
+    if (pdfDocument) {
+      pdfDocument.destroy().catch(error => console.error("Não foi possível fechar o livro PDF:", error));
+    }
+    pdfDocument = null;
+  }
+
+  function goToPdfPage(value) {
+    const pageNumber = Number(value);
+    if (!pdfDocument || !Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > pdfDocument.numPages) {
+      $("#pdf-page-input").value = pdfPageNumber;
+      if (pdfDocument) showToast(`Informe uma página entre 1 e ${pdfDocument.numPages}.`);
+      return;
+    }
+    pdfPageNumber = pageNumber;
+    renderPdfPage();
+  }
+
+  async function loadBook() {
+    try {
+      const book = await bookTransaction("readonly", store => store.get(BOOK_ID));
+      if (book) displayBook(book);
+    } catch (error) {
+      console.error("Não foi possível carregar o livro PDF:", error);
+      showToast("Não foi possível abrir a biblioteca neste dispositivo.");
+    }
+  }
+
+  async function addBook(file) {
+    if (!file) return;
+    try {
+      if (!file.name.toLowerCase().endsWith(".pdf") || (file.type && file.type !== "application/pdf")) {
+        throw new Error("Escolha um arquivo PDF válido.");
+      }
+      const header = new TextDecoder().decode(await file.slice(0, 1024).arrayBuffer());
+      if (!header.includes("%PDF-")) throw new Error("O arquivo selecionado não parece ser um PDF válido.");
+      const book = { id: BOOK_ID, name: file.name, file: file.slice(0, file.size, "application/pdf") };
+      await bookTransaction("readwrite", store => store.put(book));
+      displayBook(book);
+      showToast("Livro PDF salvo neste dispositivo.");
+    } catch (error) {
+      console.error("Não foi possível adicionar o livro PDF:", error);
+      showToast(error.message || "Não foi possível salvar o livro PDF neste dispositivo.");
+    } finally {
+      $("#pdf-file-input").value = "";
+    }
+  }
+
+  async function removeBook() {
+    if (!activeBook || !window.confirm("Remover este livro salvo neste dispositivo?")) return;
+    try {
+      await bookTransaction("readwrite", store => store.delete(BOOK_ID));
+      displayBook(null);
+      showToast("Livro removido da biblioteca.");
+    } catch (error) {
+      console.error("Não foi possível remover o livro PDF:", error);
+      showToast("Não foi possível remover o livro PDF.");
+    }
+  }
+
+  function toggleBookReader(forceOpen) {
+    const reader = $("#pdf-reader");
+    const isOpen = forceOpen ?? reader.hidden;
+    reader.hidden = !isOpen;
+    document.body.classList.toggle("pdf-reader-open", isOpen);
+    $('[data-view="library"]').setAttribute("aria-expanded", String(isOpen));
+    $('[data-view="library"]').classList.toggle("active", isOpen);
+    if (isOpen) showBookViewer();
+    else releaseBookViewer();
   }
 
   function formatTime(seconds) {
@@ -100,6 +312,22 @@
     </article>`;
   }
 
+  function renderPdfTimers() {
+    const monitor = $("#pdf-timer-monitor");
+    const liveTimers = $("#pdf-live-timers");
+    monitor.hidden = state.timers.length === 0;
+    liveTimers.innerHTML = state.timers.map(timer => {
+      const current = timers.has(timer.id) ? timers.get(timer.id).remaining : timer.remaining;
+      const isRunning = timers.has(timer.id);
+      const status = isRunning ? "Em andamento" : current === 0 ? "Tempo esgotado" : "Pausado";
+      return `<article class="pdf-live-timer ${isRunning ? "is-running" : ""} ${current === 0 ? "is-finished" : ""}">
+        <span class="pdf-live-timer-status">${status}</span>
+        <strong class="pdf-live-timer-name">${escapeHtml(timer.name)}</strong>
+        <span class="pdf-live-timer-clock">${formatTime(current)}</span>
+      </article>`;
+    }).join("");
+  }
+
   function render() {
     $("#stat-characters").textContent = state.characters.length;
     $("#stat-items").textContent = state.items.length;
@@ -135,6 +363,7 @@
     $("#overview-timer-list").hidden = state.timers.length === 0;
     $("#timer-card-grid").innerHTML = state.timers.map(timer => timerMarkup(timer, true)).join("");
     $("#timers-empty").hidden = state.timers.length > 0;
+    renderPdfTimers();
   }
 
   function openModal(kind, id = null) {
@@ -324,8 +553,10 @@
     const interval = setInterval(() => {
       timer.remaining = Math.max(0, timer.remaining - 1);
       timers.set(id, { interval, remaining: timer.remaining });
-      const clock = $(`[data-timer-clock="${CSS.escape(id)}"]`);
-      if (clock) clock.textContent = formatTime(timer.remaining);
+      $$(`[data-timer-clock="${CSS.escape(id)}"]`).forEach(clock => {
+        clock.textContent = formatTime(timer.remaining);
+      });
+      renderPdfTimers();
       if (timer.remaining <= 0) {
         stopTimer(id);
         showToast(`Tempo esgotado: ${timer.name}`);
@@ -406,6 +637,7 @@
 
   document.addEventListener("click", event => {
     const nav = event.target.closest("[data-view]");
+    if (nav?.dataset.view === "library") return toggleBookReader();
     if (nav) return navigate(nav.dataset.view);
     const go = event.target.closest("[data-go]");
     if (go) return navigate(go.dataset.go);
@@ -427,7 +659,53 @@
 
   document.addEventListener("keydown", event => {
     if (event.key === "Escape" && !$("#modal-backdrop").hidden) closeModal();
+    else if (event.key === "Escape" && !$("#pdf-reader").hidden) toggleBookReader(false);
     if (event.key === "Enter" && event.target.matches(".item-tile")) openModal("item", event.target.dataset.id);
+  });
+
+  $("#pdf-choose-button").addEventListener("click", () => $("#pdf-file-input").click());
+  $("#pdf-empty-choose").addEventListener("click", () => $("#pdf-file-input").click());
+  $("#pdf-file-input").addEventListener("change", event => addBook(event.target.files?.[0]));
+  $("#pdf-remove-button").addEventListener("click", removeBook);
+  $("#pdf-reader-close").addEventListener("click", () => toggleBookReader(false));
+  $("#pdf-retry-button").addEventListener("click", () => {
+    releaseBookViewer();
+    if (window.pdfjsLib) showBookViewer();
+    else window.location.reload();
+  });
+  $("#pdf-previous-page").addEventListener("click", () => {
+    if (pdfPageNumber > 1) {
+      pdfPageNumber -= 1;
+      renderPdfPage();
+    }
+  });
+  $("#pdf-next-page").addEventListener("click", () => {
+    if (pdfDocument && pdfPageNumber < pdfDocument.numPages) {
+      pdfPageNumber += 1;
+      renderPdfPage();
+    }
+  });
+  $("#pdf-page-input").addEventListener("change", event => goToPdfPage(event.currentTarget.value));
+  $("#pdf-page-input").addEventListener("keydown", event => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      goToPdfPage(event.currentTarget.value);
+      event.currentTarget.blur();
+    }
+  });
+  $("#pdf-zoom-out").addEventListener("click", () => {
+    pdfZoom = Math.max(0.5, pdfZoom - 0.1);
+    renderPdfPage();
+  });
+  $("#pdf-zoom-in").addEventListener("click", () => {
+    pdfZoom = Math.min(2.5, pdfZoom + 0.1);
+    renderPdfPage();
+  });
+  $("#pdf-reader-content").addEventListener("dragover", event => event.preventDefault());
+  $("#pdf-reader-content").addEventListener("drop", event => {
+    event.preventDefault();
+    const file = event.dataTransfer.files[0];
+    if (file) addBook(file);
   });
 
   $("#entity-form").addEventListener("submit", submitForm);
@@ -446,4 +724,5 @@
     weekday: "long", day: "numeric", month: "long"
   }).format(new Date()).toLocaleUpperCase("pt-BR");
   render();
+  loadBook();
 })();
