@@ -18,7 +18,7 @@
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 320px; background: var(--bg); font-size: 14px; }
+body { margin: 0; min-width: 320px; background: linear-gradient(#11131370, #11131370), url("../../Downloads/938720-vintage-flowers-wallpaper-vintage-floral-wallpaper-vintage-floral-background.jpg") center / cover fixed; font-size: 14px; }
 button, input, textarea { font: inherit; }
 button { color: inherit; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
